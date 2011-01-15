@@ -516,7 +516,8 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
       break;
     case ARG_DVBSRC_FREQUENCY:
       object->freq = g_value_get_uint (value);
-      GST_INFO_OBJECT (object, "Set Property: ARG_DVBSRC_FREQUENCY");
+      GST_INFO_OBJECT (object, "Set Property: ARG_DVBSRC_FREQUENCY %d",
+          g_value_get_uint (value));
       break;
     case ARG_DVBSRC_POLARITY:
     {
@@ -562,7 +563,7 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
         while (*pids != NULL && pid_count < MAX_FILTERS) {
           pid = strtol (*pids, NULL, 0);
           if (pid > 1 && pid <= 8192) {
-            GST_INFO_OBJECT (object, "Parsed Pid: %d\n", pid);
+            GST_INFO_OBJECT (object, "\tParsed Pid: %d", pid);
             object->pids[pid_count] = pid;
             pid_count++;
           }
