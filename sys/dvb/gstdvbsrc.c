@@ -87,7 +87,8 @@ enum
   ARG_DVBSRC_HIERARCHY_INF,
   ARG_DVBSRC_TUNE,
   ARG_DVBSRC_INVERSION,
-  ARG_DVBSRC_STATS_REPORTING_INTERVAL
+  ARG_DVBSRC_STATS_REPORTING_INTERVAL,
+  ARG_DVBSRC_DVB_BUFFER_SIZE
 };
 
 #define DEFAULT_ADAPTER 0
@@ -106,7 +107,7 @@ enum
 #define DEFAULT_HIERARCHY HIERARCHY_1
 #define DEFAULT_INVERSION INVERSION_ON
 #define DEFAULT_STATS_REPORTING_INTERVAL 100
-
+#define DEFAULT_DVB_BUFFER_SIZE (2*4096)
 #define DEFAULT_BUFFER_SIZE 8192        /* not a property */
 
 static void gst_dvbsrc_output_frontend_stats (GstDvbSrc * src);
@@ -444,6 +445,13 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           "stats-reporting-interval",
           "The number of reads before reporting frontend stats",
           0, G_MAXUINT, DEFAULT_STATS_REPORTING_INTERVAL, G_PARAM_READWRITE));
+
+  g_object_class_install_property (gobject_class,
+      ARG_DVBSRC_DVB_BUFFER_SIZE,
+      g_param_spec_uint ("dvb-buffer-size",
+          "dvb-buffer-size",
+          "The kernel buffer size used by the DVB api",
+          0, G_MAXUINT, DEFAULT_DVB_BUFFER_SIZE, G_PARAM_READWRITE));
 }
 
 /* initialize the new element
@@ -470,7 +478,7 @@ gst_dvbsrc_init (GstDvbSrc * object, GstDvbSrcClass * klass)
   }
   /* Pid 8192 on DVB gets the whole transport stream */
   object->pids[0] = 8192;
-
+  object->dvb_buffer_size = DEFAULT_DVB_BUFFER_SIZE;
   object->adapter_number = DEFAULT_ADAPTER;
   object->frontend_number = DEFAULT_FRONTEND;
   object->diseqc_src = DEFAULT_DISEQC_SRC;
@@ -629,6 +637,9 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
       object->stats_interval = g_value_get_uint (value);
       object->stats_counter = 0;
       break;
+    case ARG_DVBSRC_DVB_BUFFER_SIZE:
+      object->dvb_buffer_size = g_value_get_uint (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
@@ -692,6 +703,9 @@ gst_dvbsrc_get_property (GObject * _object, guint prop_id,
       break;
     case ARG_DVBSRC_STATS_REPORTING_INTERVAL:
       g_value_set_uint (value, object->stats_interval);
+      break;
+    case ARG_DVBSRC_DVB_BUFFER_SIZE:
+      g_value_set_uint (value, object->dvb_buffer_size);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -834,9 +848,11 @@ gst_dvbsrc_open_dvr (GstDvbSrc * object)
     return FALSE;
   }
   g_free (dvr_dev);
-  GST_INFO_OBJECT (object, "Setting buffer size");
-  if (ioctl (object->fd_dvr, DMX_SET_BUFFER_SIZE, 1024 * 1024) < 0) {
-    GST_INFO_OBJECT (object, "DMX_SET_BUFFER_SIZE failed");
+
+  GST_INFO_OBJECT (object, "Setting DVB kernel buffer size to %d ",
+      object->dvb_buffer_size);
+  if (ioctl (object->fd_dvr, DMX_SET_BUFFER_SIZE, object->dvb_buffer_size) < 0) {
+    GST_INFO_OBJECT (object, "ioctl DMX_SET_BUFFER_SIZE failed (%d)", errno);
     return FALSE;
   }
   return TRUE;
