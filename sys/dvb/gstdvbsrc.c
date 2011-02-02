@@ -812,9 +812,9 @@ gst_dvbsrc_open_frontend (GstDvbSrc * object)
           "name", G_TYPE_STRING, adapter_name, NULL);
       break;
     default:
-      g_error ("Unknown frontend type: %d", object->adapter_type);
-      adapter_structure = gst_structure_new ("dvb-adapter",
-          "type", G_TYPE_STRING, "unknown", NULL);
+      GST_ELEMENT_ERROR (object, RESOURCE, SETTINGS,
+          (_("Unknown frontend type: %d"), object->adapter_type), (NULL));
+      return FALSE;
   }
 
   GST_INFO_OBJECT (object, "DVB card: %s ", adapter_name);
@@ -939,34 +939,29 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
 
         tmp = read (fd, GST_BUFFER_DATA (buf) + count, size - count);
         if (tmp < 0) {
-          GST_WARNING
-              ("Unable to read from device: /dev/dvb/adapter%d/dvr%d (%d)",
-              adapter_number, frontend_number, errno);
           attempts += 1;
-          if (attempts % 10 == 0) {
-            GST_WARNING
-                ("Unable to read from device after %u attempts: /dev/dvb/adapter%d/dvr%d",
-                attempts, adapter_number, frontend_number);
-          }
-
-        } else
+          GST_WARNING_OBJECT
+              ("Unable to read from device after %d attempts: /dev/dvb/adapter%d/dvr%d",
+              attempts, adapter_number, frontend_number);
+        } else {
           count = count + tmp;
+        }
       } else {
-        GST_LOG ("revents = %d\n", pfd[0].revents);
+        GST_DEBUG_OBJECT (object, "revents = %d", pfd[0].revents);
       }
     } else if (ret_val == 0) {  // poll timeout
       attempts += 1;
-      GST_INFO ("Reading from device /dev/dvb/adapter%d/dvr%d timedout (%d)",
+      GST_INFO_OBJECT (object,
+          "Reading from device /dev/dvb/adapter%d/dvr%d timed out (%d)",
           adapter_number, frontend_number, attempts);
+      GST_WARNING
+          ("Unable to read after %u attempts from device: /dev/dvb/adapter%d/dvr%d (%d)",
+          attempts, adapter_number, frontend_number, errno);
 
       if (attempts % 10 == 0) {
-        GST_WARNING
-            ("Unable to read after %u attempts from device: /dev/dvb/adapter%d/dvr%d (%d)",
-            attempts, adapter_number, frontend_number, errno);
         gst_element_post_message (GST_ELEMENT_CAST (object),
             gst_message_new_element (GST_OBJECT (object),
                 gst_structure_empty_new ("dvb-read-failure")));
-
       }
     } else if (errno == -EINTR) {       // poll interrupted
       if (attempts % 50 == 0) {
@@ -982,6 +977,7 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
     return NULL;
   }
 
+  GST_DEBUG_OBJECT (object, "Readed %d byes", count);
   GST_BUFFER_SIZE (buf) = count;
   GST_BUFFER_TIMESTAMP (buf) = GST_CLOCK_TIME_NONE;
   return buf;
@@ -1424,7 +1420,8 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
   struct dvbsrc_tuning_info info;
 
   if (!gst_dvbsrc_set_frontend_params (object, &info)) {
-    g_warning ("Invalid frontend parameters");
+    GST_ELEMENT_WARNING (object, RESOURCE, SETTINGS,
+        (_("Invalid Parameters")), (NULL));
     return FALSE;
   }
 
@@ -1436,9 +1433,8 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
 #else
   if (ioctl (object->fd_frontend, FE_SET_FRONTEND, &info.feparams) < 0) {
 #endif
-    GST_DEBUG_OBJECT (object, "ioctl(FE_SET_FRONTEND) %d:%s", errno,
-        strerror (errno));
-    g_warning ("Error tuning channel: %s", strerror (errno));
+    GST_ELEMENT_WARNING (object, RESOURCE, SETTINGS,
+        (_("Can not set frontend")), GST_ERROR_SYSTEM);
     return FALSE;
   }
 
@@ -1491,7 +1487,7 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
   gchar *demux_dev = g_strdup_printf ("/dev/dvb/adapter%d/demux%d",
       object->adapter_number, object->frontend_number);
 
-  GST_INFO_OBJECT (object, "Setting PES filter");
+  GST_INFO_OBJECT (object, "Setting PES filters");
 
   for (i = 0; i < MAX_FILTERS; i++) {
     if (object->pids[i] == G_MAXUINT16)
@@ -1502,7 +1498,8 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
 
     close (*fd);
     if ((*fd = open (demux_dev, O_RDWR)) < 0) {
-      g_error ("Error opening demuxer: %s (%s)", strerror (errno), demux_dev);
+      GST_ELEMENT_ERROR (object, RESOURCE, SETTINGS,
+          (_("Error opening demuxer: %s "), demux_dev), GST_ERROR_SYSTEM);
       g_free (demux_dev);
     }
     g_return_if_fail (*fd != -1);
@@ -1513,12 +1510,14 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
     pes_filter.pes_type = DMX_PES_OTHER;
     pes_filter.flags = DMX_IMMEDIATE_START;
 
-    GST_INFO_OBJECT (object, "Setting pes-filter, pid = %d, type = %d",
+    GST_INFO_OBJECT (object, "\t pid = %d, type = %d",
         pes_filter.pid, pes_filter.pes_type);
 
-    if (ioctl (*fd, DMX_SET_PES_FILTER, &pes_filter) < 0)
-      GST_WARNING_OBJECT (object, "Error setting PES filter on %s: %s",
-          demux_dev, strerror (errno));
+    if (ioctl (*fd, DMX_SET_PES_FILTER, &pes_filter) < 0) {
+      GST_ELEMENT_WARNING (object,
+          RESOURCE, SETTINGS,
+          (_("Error setting PES filter")), GST_ERROR_SYSTEM);
+    }
   }
 
   g_free (demux_dev);
