@@ -25,10 +25,10 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch dvbsrc modulation="QAM 64" trans-mode=8k bandwidth=8 frequency=514000000 code-rate-lp=AUTO code-rate-hp=2/3 guard=4  hierarchy=0 ! mpegtsdemux name=demux ! queue max-size-buffers=0 max-size-time=0 ! mpeg2dec ! xvimagesink demux. ! queue max-size-buffers=0 max-size-time=0 ! mad ! alsasink
+ * gst-launch dvbsrc modulation="QAM 64" transmission-mode=8k bandwidth=8 frequency=514000000 code-rate-lp=AUTO code-rate-hp=2/3 guard-interval=4  hierarchy=0 ! mpegtsdemux name=demux ! queue max-size-buffers=0 max-size-time=0 ! mpeg2dec ! xvimagesink demux. ! queue max-size-buffers=0 max-size-time=0 ! mad ! alsasink
  * ]| Captures a full transport stream from dvb card 0 that is a DVB-T card at tuned frequency 514000000 with other parameters as seen in the pipeline and renders the first tv program on the transport stream.
  * |[
- * gst-launch dvbsrc modulation="QAM 64" trans-mode=8k bandwidth=8 frequency=514000000 code-rate-lp=AUTO code-rate-hp=2/3 guard=4  hierarchy=0 pids=100:256:257 ! mpegtsdemux name=demux ! queue max-size-buffers=0 max-size-time=0 ! mpeg2dec ! xvimagesink demux. ! queue max-size-buffers=0 max-size-time=0 ! mad ! alsasink
+ * gst-launch dvbsrc modulation="QAM 64" transmission-mode=8k bandwidth=8 frequency=514000000 code-rate-lp=AUTO code-rate-hp=2/3 guard-interval=4  hierarchy=0 pids=100:256:257 ! mpegtsdemux name=demux ! queue max-size-buffers=0 max-size-time=0 ! mpeg2dec ! xvimagesink demux. ! queue max-size-buffers=0 max-size-time=0 ! mad ! alsasink
  * ]| Captures and renders a transport stream from dvb card 0 that is a DVB-T card for a program at tuned frequency 514000000 with PMT pid 100 and elementary stream pids of 256, 257 with other parameters as seen in the pipeline.
  * |[
  * gst-launch dvbsrc polarity="h" frequency=11302000 symbol-rate=27500 diseqc-src=0 pids=50:102:103 ! mpegtsdemux name=demux ! queue max-size-buffers=0 max-size-time=0 ! mpeg2dec ! xvimagesink demux. ! queue max-size-buffers=0 max-size-time=0 ! mad ! alsasink
@@ -413,10 +413,9 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           "Low Priority Code Rate (DVB-T)",
           GST_TYPE_DVBSRC_CODE_RATE, DEFAULT_CODE_RATE_LP, G_PARAM_READWRITE));
 
-  /* FIXME: should the property be called 'guard-interval' then? */
   g_object_class_install_property (gobject_class, ARG_DVBSRC_GUARD,
-      g_param_spec_enum ("guard",
-          "guard",
+      g_param_spec_enum ("guard-interval",
+          "guard-interval",
           "Guard Interval (DVB-T)",
           GST_TYPE_DVBSRC_GUARD, DEFAULT_GUARD, G_PARAM_READWRITE));
 
@@ -425,10 +424,9 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           "Modulation (DVB-T and DVB-C)",
           GST_TYPE_DVBSRC_MODULATION, DEFAULT_MODULATION, G_PARAM_READWRITE));
 
-  /* FIXME: property should be named 'transmission-mode' */
   g_object_class_install_property (gobject_class,
       ARG_DVBSRC_TRANSMISSION_MODE,
-      g_param_spec_enum ("trans-mode", "trans-mode",
+      g_param_spec_enum ("transmission-mode", "transmission-mode",
           "Transmission Mode (DVB-T)", GST_TYPE_DVBSRC_TRANSMISSION_MODE,
           DEFAULT_TRANSMISSION_MODE, G_PARAM_READWRITE));
 
