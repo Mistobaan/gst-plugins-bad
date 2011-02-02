@@ -949,7 +949,7 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
       } else {
         GST_DEBUG_OBJECT (object, "revents = %d", pfd[0].revents);
       }
-    } else if (ret_val == 0) {  // poll timeout
+    } else if (ret_val == 0) {  /* poll timeout */
       attempts += 1;
       GST_INFO_OBJECT (object,
           "Reading from device /dev/dvb/adapter%d/dvr%d timed out (%d)",
@@ -963,7 +963,7 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
             gst_message_new_element (GST_OBJECT (object),
                 gst_structure_empty_new ("dvb-read-failure")));
       }
-    } else if (errno == -EINTR) {       // poll interrupted
+    } else if (errno == -EINTR) {       /* poll interrupted */
       if (attempts % 50 == 0) {
         gst_buffer_unref (buf);
         return NULL;
@@ -993,7 +993,7 @@ gst_dvbsrc_create (GstPushSrc * element, GstBuffer ** buf)
   object = GST_DVBSRC (element);
   GST_LOG ("fd_dvr: %d", object->fd_dvr);
 
-  //g_object_get(G_OBJECT(object), "blocksize", &buffer_size, NULL);
+  /* g_object_get(G_OBJECT(object), "blocksize", &buffer_size, NULL); */
   buffer_size = DEFAULT_BUFFER_SIZE;
 
   /* device can not be tuned during read */
@@ -1020,7 +1020,7 @@ gst_dvbsrc_create (GstPushSrc * element, GstBuffer ** buf)
               gst_structure_empty_new ("dvb-read-failure")));
     }
 
-    // Handle periodic statistics updates
+    /* Handle periodic statistics updates */
     gst_dvbsrc_output_frontend_stats (object);
   }
 
@@ -1288,7 +1288,7 @@ gst_dvbsrc_set_frontend_params (GstDvbSrc * object,
     case FE_QPSK:
       object->tone = SEC_TONE_OFF;
       if (freq > 2200000) {
-        // this must be an absolute frequency
+        /* this must be an absolute frequency */
         if (freq < SLOF) {
           info->feparams.frequency = (freq - LOF1);
         } else {
@@ -1296,7 +1296,7 @@ gst_dvbsrc_set_frontend_params (GstDvbSrc * object,
           object->tone = SEC_TONE_ON;
         }
       } else {
-        // this is an L-Band frequency
+        /* this is an L-Band frequency */
         info->feparams.frequency = freq;
       }
       info->feparams.inversion = INVERSION_AUTO;
@@ -1333,7 +1333,7 @@ gst_dvbsrc_set_frontend_params (GstDvbSrc * object,
         diseqc (object->fd_frontend, object->diseqc_src, voltage, object->tone);
         /* Once diseqc source is set, do not set it again until
          * app decides to change it */
-        //object->send_diseqc = FALSE;
+        /*object->send_diseqc = FALSE; */
       }
 
       break;
