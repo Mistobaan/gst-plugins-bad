@@ -283,8 +283,11 @@ static gboolean gst_dvbsrc_is_seekable (GstBaseSrc * bsrc);
 static gboolean gst_dvbsrc_get_size (GstBaseSrc * src, guint64 * size);
 
 static gboolean gst_dvbsrc_tune (GstDvbSrc * object);
+static gboolean gst_dvbsrc_tune_frontend (GstDvbSrc * object);
+
 static void gst_dvbsrc_set_pes_filters (GstDvbSrc * object);
 static void gst_dvbsrc_unset_pes_filters (GstDvbSrc * object);
+
 
 static gboolean gst_dvbsrc_frontend_status (GstDvbSrc * object);
 
@@ -1255,21 +1258,132 @@ diseqc (int secfd, int sat_no, int voltage, int tone)
 
 }
 
-
-static gboolean
-gst_dvbsrc_tune (GstDvbSrc * object)
+struct dvbsrc_tuning_info
 {
-#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
+#if DVB_API_VERSION >= 3 && DVB_API_VERSION_MINOR >= 3
   struct dvbfe_params feparams;
 #else
   struct dvb_frontend_parameters feparams;
 #endif
+};
+
+static gboolean
+gst_dvbsrc_set_frontend_params (GstDvbSrc * object,
+    struct dvbsrc_tuning_info *info)
+{
   fe_sec_voltage_t voltage;
-  fe_status_t status;
-  int i;
-  int j;
   unsigned int freq = object->freq;
   unsigned int sym_rate = object->sym_rate * 1000;
+
+  switch (object->adapter_type) {
+    case FE_QPSK:
+      object->tone = SEC_TONE_OFF;
+      if (freq > 2200000) {
+        // this must be an absolute frequency
+        if (freq < SLOF) {
+          info->feparams.frequency = (freq - LOF1);
+        } else {
+          info->feparams.frequency = (freq - LOF2);
+          object->tone = SEC_TONE_ON;
+        }
+      } else {
+        // this is an L-Band frequency
+        info->feparams.frequency = freq;
+      }
+      info->feparams.inversion = INVERSION_AUTO;
+      GST_DEBUG_OBJECT (object, "DVB Api version %d.%d", DVB_API_VERSION,
+          DVB_API_VERSION_MINOR);
+#if DVB_API_VERSION >= 3 && DVB_API_VERSION_MINOR >= 3
+      GST_DEBUG_OBJECT (object, "using multiproto driver");
+      info->feparams.delsys.dvbs.symbol_rate = sym_rate;
+      info->feparams.delsys.dvbs.fec = object->code_rate_hp;
+#else
+      info->feparams.u.qpsk.symbol_rate = sym_rate;
+      info->feparams.u.qpsk.fec_inner = object->code_rate_hp;
+#endif
+      GST_INFO_OBJECT (object,
+          "Tuning DVB-S to L-Band:%u, Pol:%d, srate=%u, 22kHz=%s",
+          info->feparams.frequency, object->pol, sym_rate,
+          object->tone == SEC_TONE_ON ? "on" : "off");
+
+      if (object->pol == DVB_POL_H)
+        voltage = SEC_VOLTAGE_18;
+      else
+        voltage = SEC_VOLTAGE_13;
+
+      if (object->diseqc_src == -1 || object->send_diseqc == FALSE) {
+        if (ioctl (object->fd_frontend, FE_SET_VOLTAGE, voltage) < 0) {
+          g_warning ("Unable to set voltage on dvb frontend device");
+        }
+
+        if (ioctl (object->fd_frontend, FE_SET_TONE, object->tone) < 0) {
+          g_warning ("Error setting tone: %s", strerror (errno));
+        }
+      } else {
+        GST_DEBUG_OBJECT (object, "Sending DISEqC");
+        diseqc (object->fd_frontend, object->diseqc_src, voltage, object->tone);
+        /* Once diseqc source is set, do not set it again until
+         * app decides to change it */
+        //object->send_diseqc = FALSE;
+      }
+
+      break;
+    case FE_OFDM:
+
+      info->feparams.frequency = freq;
+#if DVB_API_VERSION >= 3 && DVB_API_VERSION_MINOR >= 3
+      info->feparams.delsys.dvbs.fec = object->code_rate_hp;
+      info->feparams.delsys.dvbs.modulation = object->modulation;
+      info->feparams.delsys.dvbs.symbol_rate = sym_rate;
+#else
+      info->feparams.u.ofdm.bandwidth = object->bandwidth;
+      info->feparams.u.ofdm.code_rate_HP = object->code_rate_hp;
+      info->feparams.u.ofdm.code_rate_LP = object->code_rate_lp;
+      info->feparams.u.ofdm.constellation = object->modulation;
+      info->feparams.u.ofdm.transmission_mode = object->transmission_mode;
+      info->feparams.u.ofdm.guard_interval = object->guard_interval;
+      info->feparams.u.ofdm.hierarchy_information =
+          object->hierarchy_information;
+#endif
+      info->feparams.inversion = object->inversion;
+
+      GST_INFO_OBJECT (object, "Tuning DVB-T to %d Hz", freq);
+      break;
+    case FE_QAM:
+      GST_INFO_OBJECT (object, "Tuning DVB-C to %d, srate=%d", freq, sym_rate);
+      info->feparams.frequency = freq;
+      info->feparams.inversion = object->inversion;
+#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
+      info->feparams.delsys.dvbs.fec = object->code_rate_hp;
+      info->feparams.delsys.dvbs.modulation = object->modulation;
+      info->feparams.delsys.dvbs.symbol_rate = sym_rate;
+#else
+      info->feparams.u.qam.fec_inner = object->code_rate_hp;
+      info->feparams.u.qam.modulation = object->modulation;
+      info->feparams.u.qam.symbol_rate = sym_rate;
+#endif
+      break;
+    case FE_ATSC:
+      GST_INFO_OBJECT (object, "Tuning ATSC to %d Hz", freq);
+      info->feparams.frequency = freq;
+#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
+      info->feparams.delsys.atsc.modulation = object->modulation;
+#else
+      info->feparams.u.vsb.modulation = object->modulation;
+#endif
+      break;
+    default:
+      g_error ("Unknown frontend type: %d", object->adapter_type);
+      return FALSE;
+  }
+
+  return TRUE;
+}
+
+static gboolean
+gst_dvbsrc_tune (GstDvbSrc * object)
+{
+
 
   /* found in mail archive on linuxtv.org
    * What works well for us is:
@@ -1287,139 +1401,71 @@ gst_dvbsrc_tune (GstDvbSrc * object)
   }
 
   gst_dvbsrc_unset_pes_filters (object);
-  for (j = 0; j < 5; j++) {
-    switch (object->adapter_type) {
-      case FE_QPSK:
-        object->tone = SEC_TONE_OFF;
-        if (freq > 2200000) {
-          // this must be an absolute frequency
-          if (freq < SLOF) {
-            feparams.frequency = (freq - LOF1);
-          } else {
-            feparams.frequency = (freq - LOF2);
-            object->tone = SEC_TONE_ON;
-          }
-        } else {
-          // this is an L-Band frequency
-          feparams.frequency = freq;
-        }
-        feparams.inversion = INVERSION_AUTO;
-        GST_DEBUG_OBJECT (object, "api version %d.%d", DVB_API_VERSION,
-            DVB_API_VERSION_MINOR);
-#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
-        GST_DEBUG_OBJECT (object, "using multiproto driver");
-        feparams.delsys.dvbs.symbol_rate = sym_rate;
-        feparams.delsys.dvbs.fec = object->code_rate_hp;
-#else
-        feparams.u.qpsk.symbol_rate = sym_rate;
-        feparams.u.qpsk.fec_inner = object->code_rate_hp;
-#endif
-        GST_INFO_OBJECT (object,
-            "tuning DVB-S to L-Band:%u, Pol:%d, srate=%u, 22kHz=%s",
-            feparams.frequency, object->pol, sym_rate,
-            object->tone == SEC_TONE_ON ? "on" : "off");
 
-        if (object->pol == DVB_POL_H)
-          voltage = SEC_VOLTAGE_18;
-        else
-          voltage = SEC_VOLTAGE_13;
-
-        if (object->diseqc_src == -1 || object->send_diseqc == FALSE) {
-          if (ioctl (object->fd_frontend, FE_SET_VOLTAGE, voltage) < 0) {
-            g_warning ("Unable to set voltage on dvb frontend device");
-          }
-
-          if (ioctl (object->fd_frontend, FE_SET_TONE, object->tone) < 0) {
-            g_warning ("Error setting tone: %s", strerror (errno));
-          }
-        } else {
-          GST_DEBUG_OBJECT (object, "Sending DISEqC");
-          diseqc (object->fd_frontend, object->diseqc_src, voltage,
-              object->tone);
-          /* Once diseqc source is set, do not set it again until
-           * app decides to change it */
-          //object->send_diseqc = FALSE;
-        }
-
-        break;
-      case FE_OFDM:
-
-        feparams.frequency = freq;
-#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
-        feparams.delsys.dvbs.fec = object->code_rate_hp;
-        feparams.delsys.dvbs.modulation = object->modulation;
-        feparams.delsys.dvbs.symbol_rate = sym_rate;
-#else
-        feparams.u.ofdm.bandwidth = object->bandwidth;
-        feparams.u.ofdm.code_rate_HP = object->code_rate_hp;
-        feparams.u.ofdm.code_rate_LP = object->code_rate_lp;
-        feparams.u.ofdm.constellation = object->modulation;
-        feparams.u.ofdm.transmission_mode = object->transmission_mode;
-        feparams.u.ofdm.guard_interval = object->guard_interval;
-        feparams.u.ofdm.hierarchy_information = object->hierarchy_information;
-#endif
-        feparams.inversion = object->inversion;
-
-        GST_INFO_OBJECT (object, "tuning DVB-T to %d Hz\n", freq);
-        break;
-      case FE_QAM:
-        GST_INFO_OBJECT (object, "Tuning DVB-C to %d, srate=%d", freq,
-            sym_rate);
-        feparams.frequency = freq;
-        feparams.inversion = object->inversion;
-#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
-        feparams.delsys.dvbs.fec = object->code_rate_hp;
-        feparams.delsys.dvbs.modulation = object->modulation;
-        feparams.delsys.dvbs.symbol_rate = sym_rate;
-#else
-        feparams.u.qam.fec_inner = object->code_rate_hp;
-        feparams.u.qam.modulation = object->modulation;
-        feparams.u.qam.symbol_rate = sym_rate;
-#endif
-        break;
-      case FE_ATSC:
-        GST_INFO_OBJECT (object, "Tuning ATSC to %d", freq);
-        feparams.frequency = freq;
-#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
-        feparams.delsys.atsc.modulation = object->modulation;
-#else
-        feparams.u.vsb.modulation = object->modulation;
-#endif
-        break;
-      default:
-        g_error ("Unknown frontend type: %d", object->adapter_type);
-
-    }
-    usleep (100000);
-    /* now tune the frontend */
-#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
-    if (ioctl (object->fd_frontend, DVBFE_SET_PARAMS, &feparams) < 0) {
-#else
-    if (ioctl (object->fd_frontend, FE_SET_FRONTEND, &feparams) < 0) {
-#endif
-      g_warning ("Error tuning channel: %s", strerror (errno));
-    }
-    for (i = 0; i < 50; i++) {
-      usleep (100000);
-      if (ioctl (object->fd_frontend, FE_READ_STATUS, &status) == -1) {
-        perror ("FE_READ_STATUS");
-        break;
-      }
-      GST_LOG_OBJECT (object, "status == 0x%02x", status);
-      if (status & FE_HAS_LOCK)
-        break;
-    }
-    if (status & FE_HAS_LOCK)
-      break;
-  }
-  if (!(status & FE_HAS_LOCK))
+  if (!gst_dvbsrc_tune_frontend (object)) {
     return FALSE;
-  /* set pid filters */
+  }
+
   gst_dvbsrc_set_pes_filters (object);
 
   return TRUE;
 }
 
+static gboolean
+gst_dvbsrc_tune_frontend (GstDvbSrc * object)
+{
+  struct pollfd pfd[1];
+  int ret_val = 0;
+  struct dvb_frontend_event dvb_event;
+  const int TIMEOUT = 100;
+  gboolean frontend_has_lock = FALSE;
+  const uint MAX_TUNING_TIME = 10000;
+  uint tuning_time_elapsed = 0;
+  struct dvbsrc_tuning_info info;
+
+  if (!gst_dvbsrc_set_frontend_params (object, &info)) {
+    g_warning ("Invalid frontend parameters");
+    return FALSE;
+  }
+
+  pfd[0].fd = object->fd_frontend;
+  pfd[0].events = POLLPRI;
+
+#if DVB_API_VERSION == 3 && DVB_API_VERSION_MINOR == 3
+  if (ioctl (object->fd_frontend, DVBFE_SET_PARAMS, &info.feparams) < 0) {
+#else
+  if (ioctl (object->fd_frontend, FE_SET_FRONTEND, &info.feparams) < 0) {
+#endif
+    GST_DEBUG_OBJECT (object, "ioctl(FE_SET_FRONTEND) %d:%s", errno,
+        strerror (errno));
+    g_warning ("Error tuning channel: %s", strerror (errno));
+    return FALSE;
+  }
+
+  while (!frontend_has_lock && tuning_time_elapsed < MAX_TUNING_TIME) {
+    ret_val = poll (pfd, 1, TIMEOUT);
+    if (G_LIKELY (ret_val > 0)) {
+      if (pfd[0].revents & POLLPRI) {
+        if (ioctl (object->fd_frontend, FE_GET_EVENT, &dvb_event) < 0) {
+          GST_DEBUG_OBJECT (object, "ioctl(FE_GET_EVENT) %d:%s",
+              errno, strerror (errno));
+        } else {
+          GST_DEBUG_OBJECT (object, "status == 0x%02x", dvb_event.status);
+          if (dvb_event.status & FE_HAS_LOCK) {
+            frontend_has_lock = TRUE;
+          }
+        }
+      } else {
+        GST_DEBUG_OBJECT (object, "received event = 0x%x", pfd[0].revents);
+      }
+    } else if (0 == ret_val) {
+      GST_DEBUG_OBJECT (object, "Tuning timeout");
+      tuning_time_elapsed += TIMEOUT;
+    }
+  }
+
+  return frontend_has_lock ? TRUE : FALSE;
+}
 
 static void
 gst_dvbsrc_unset_pes_filters (GstDvbSrc * object)
