@@ -446,7 +446,7 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
       ARG_DVBSRC_STATS_REPORTING_INTERVAL,
       g_param_spec_uint ("stats-reporting-interval",
           "stats-reporting-interval",
-          "The number of reads before reporting frontend stats",
+          "The number of seconds before reporting frontend stats",
           0, G_MAXUINT, DEFAULT_STATS_REPORTING_INTERVAL, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class,
@@ -497,6 +497,7 @@ gst_dvbsrc_init (GstDvbSrc * object, GstDvbSrcClass * klass)
   object->hierarchy_information = DEFAULT_HIERARCHY;
   object->inversion = DEFAULT_INVERSION;
   object->stats_interval = DEFAULT_STATS_REPORTING_INTERVAL;
+  g_get_current_time (&object->stats_tstamp_last_call);
 
   object->tune_mutex = g_mutex_new ();
 }
@@ -638,7 +639,6 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
     }
     case ARG_DVBSRC_STATS_REPORTING_INTERVAL:
       object->stats_interval = g_value_get_uint (value);
-      object->stats_counter = 0;
       break;
     case ARG_DVBSRC_DVB_BUFFER_SIZE:
       object->dvb_buffer_size = g_value_get_uint (value);
@@ -1020,11 +1020,8 @@ gst_dvbsrc_create (GstPushSrc * element, GstBuffer ** buf)
               gst_structure_empty_new ("dvb-read-failure")));
     }
 
-    if (object->stats_interval != 0 &&
-        ++object->stats_counter == object->stats_interval) {
-      gst_dvbsrc_output_frontend_stats (object);
-      object->stats_counter = 0;
-    }
+    // Handle periodic statistics updates
+    gst_dvbsrc_output_frontend_stats (object);
   }
 
   g_mutex_unlock (object->tune_mutex);
@@ -1134,6 +1131,22 @@ gst_dvbsrc_output_frontend_stats (GstDvbSrc * src)
   GstMessage *message;
   GstStructure *structure;
   int fe_fd = src->fd_frontend;
+  GTimeVal now;
+  if (src->stats_interval == 0)
+    return;
+
+  g_get_current_time (&now);
+
+  /* How many seconds have passed ? */
+  gint64 now_micros = ((gint64) now.tv_sec * 1000000) + now.tv_usec;
+  gint64 then_micros = ((gint64) src->stats_tstamp_last_call.tv_sec * 1000000) +
+      src->stats_tstamp_last_call.tv_usec;
+  if ((now_micros - then_micros) < (src->stats_interval * 1000000)) {
+    return;
+  }
+
+  g_get_current_time (&src->stats_tstamp_last_call);
+
 
   ioctl (fe_fd, FE_READ_STATUS, &status);
   ioctl (fe_fd, FE_READ_SIGNAL_STRENGTH, &_signal);
@@ -1458,6 +1471,8 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
       GST_DEBUG_OBJECT (object, "Tuning timeout");
       tuning_time_elapsed += TIMEOUT;
     }
+    /* Emit stats message */
+    gst_dvbsrc_output_frontend_stats (object);
   }
 
   return frontend_has_lock ? TRUE : FALSE;

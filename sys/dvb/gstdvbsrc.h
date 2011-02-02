@@ -5,12 +5,14 @@
 #include <gst/gst.h>
 #include <gst/base/gstpushsrc.h>
 
-G_BEGIN_DECLS typedef enum
-{
-  DVB_POL_H,
-  DVB_POL_V,
-  DVB_POL_ZERO
-} GstDvbSrcPol;
+G_BEGIN_DECLS
+
+typedef enum
+  {
+    DVB_POL_H,
+    DVB_POL_V,
+    DVB_POL_ZERO
+  } GstDvbSrcPol;
 
 
 #define IPACKS 2048
@@ -69,10 +71,11 @@ struct _GstDvbSrc
 
   GstDvbSrcPol pol;
   guint stats_interval;
-  guint stats_counter;
-  gboolean need_unlock;
-
+  GTimeVal stats_tstamp_last_call;
+  
+  guint tuning_timeout;
   guint dvb_buffer_size;
+  gboolean need_unlock;
 };
 
 struct _GstDvbSrcClass
