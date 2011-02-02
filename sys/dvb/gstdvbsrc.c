@@ -88,7 +88,8 @@ enum
   ARG_DVBSRC_TUNE,
   ARG_DVBSRC_INVERSION,
   ARG_DVBSRC_STATS_REPORTING_INTERVAL,
-  ARG_DVBSRC_DVB_BUFFER_SIZE
+  ARG_DVBSRC_DVB_BUFFER_SIZE,
+  ARG_DVBSRC_TUNING_TIMEOUT
 };
 
 #define DEFAULT_ADAPTER 0
@@ -108,6 +109,7 @@ enum
 #define DEFAULT_INVERSION INVERSION_ON
 #define DEFAULT_STATS_REPORTING_INTERVAL 100
 #define DEFAULT_DVB_BUFFER_SIZE (2*4096)
+#define DEFAULT_TUNING_TIMEOUT_MSEC 10000       /* 10 sec */
 #define DEFAULT_BUFFER_SIZE 8192        /* not a property */
 
 static void gst_dvbsrc_output_frontend_stats (GstDvbSrc * src);
@@ -192,7 +194,7 @@ gst_dvbsrc_bandwidth_get_type (void)
     {BANDWIDTH_8_MHZ, "8", "8"},
     {BANDWIDTH_7_MHZ, "7", "7"},
     {BANDWIDTH_6_MHZ, "6", "6"},
-    {BANDWIDTH_AUTO, "AUTO", "AUTO"},
+    {BANDWIDTH_AUTO, "AUTO", "auto"},
     {0, NULL, NULL},
   };
 
@@ -441,6 +443,13 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           GST_TYPE_DVBSRC_INVERSION, DEFAULT_INVERSION, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class,
+      ARG_DVBSRC_TUNING_TIMEOUT,
+      g_param_spec_uint ("tuning-timeout",
+          "tuning-timeout",
+          "The max number of milliseconds before giving up to tune a frontend. Use -1 to never timeout",
+          0, G_MAXUINT, DEFAULT_STATS_REPORTING_INTERVAL, G_PARAM_READWRITE));
+
+  g_object_class_install_property (gobject_class,
       ARG_DVBSRC_STATS_REPORTING_INTERVAL,
       g_param_spec_uint ("stats-reporting-interval",
           "stats-reporting-interval",
@@ -495,6 +504,7 @@ gst_dvbsrc_init (GstDvbSrc * object, GstDvbSrcClass * klass)
   object->hierarchy_information = DEFAULT_HIERARCHY;
   object->inversion = DEFAULT_INVERSION;
   object->stats_interval = DEFAULT_STATS_REPORTING_INTERVAL;
+  object->tuning_timeout = DEFAULT_TUNING_TIMEOUT_MSEC;
   g_get_current_time (&object->stats_tstamp_last_call);
 
   object->tune_mutex = g_mutex_new ();
@@ -635,6 +645,11 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
       }
       break;
     }
+    case ARG_DVBSRC_TUNING_TIMEOUT:
+      object->tuning_timeout = g_value_get_uint (value);
+      GST_DEBUG_OBJECT (object, " tuning timeout set to %ud",
+          object->tuning_timeout);
+      break;
     case ARG_DVBSRC_STATS_REPORTING_INTERVAL:
       object->stats_interval = g_value_get_uint (value);
       break;
@@ -707,6 +722,9 @@ gst_dvbsrc_get_property (GObject * _object, guint prop_id,
       break;
     case ARG_DVBSRC_DVB_BUFFER_SIZE:
       g_value_set_uint (value, object->dvb_buffer_size);
+	  break;
+    case ARG_DVBSRC_TUNING_TIMEOUT:
+      g_value_set_uint (value, object->tuning_timeout);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -850,10 +868,10 @@ gst_dvbsrc_open_dvr (GstDvbSrc * object)
   }
   g_free (dvr_dev);
 
-  GST_INFO_OBJECT (object, "Setting DVB kernel buffer size to %d ",
+  GST_INFO_OBJECT (object, "Setting DVB kernel buffer size to %u ",
       object->dvb_buffer_size);
   if (ioctl (object->fd_dvr, DMX_SET_BUFFER_SIZE, object->dvb_buffer_size) < 0) {
-    GST_INFO_OBJECT (object, "ioctl DMX_SET_BUFFER_SIZE failed (%d)", errno);
+    GST_WARNING_OBJECT (object, "ioctl DMX_SET_BUFFER_SIZE failed (%d:%s)", errno, g_strerrno(errno));
     return FALSE;
   }
   return TRUE;
@@ -1426,9 +1444,12 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
   struct dvb_frontend_event dvb_event;
   const int TIMEOUT = 100;
   gboolean frontend_has_lock = FALSE;
-  const uint MAX_TUNING_TIME = 10000;
   uint tuning_time_elapsed = 0;
   struct dvbsrc_tuning_info info;
+  guint max_tuning_time;
+
+  g_object_get (GST_OBJECT (object), "tuning-timeout",
+      (GValue *) & max_tuning_time, NULL);
 
   if (!gst_dvbsrc_set_frontend_params (object, &info)) {
     GST_ELEMENT_WARNING (object, RESOURCE, SETTINGS,
@@ -1449,7 +1470,16 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
     return FALSE;
   }
 
-  while (!frontend_has_lock && tuning_time_elapsed < MAX_TUNING_TIME) {
+  while (!frontend_has_lock) {
+    /* Monitor Timeout Event, don't monitor if tuning time is set to -1 */
+    if (G_UNLIKELY ((max_tuning_time < G_MAXUINT32) &&
+            (tuning_time_elapsed > max_tuning_time))) {
+      GST_ELEMENT_WARNING (object, RESOURCE, SETTINGS,
+          (_("Tuning timed out after trying for %u ms)"), max_tuning_time),
+          (NULL));
+      break;
+    }
+
     ret_val = poll (pfd, 1, TIMEOUT);
     if (G_LIKELY (ret_val > 0)) {
       if (pfd[0].revents & POLLPRI) {
@@ -1466,8 +1496,8 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
         GST_DEBUG_OBJECT (object, "received event = 0x%x", pfd[0].revents);
       }
     } else if (0 == ret_val) {
-      GST_DEBUG_OBJECT (object, "Tuning timeout");
       tuning_time_elapsed += TIMEOUT;
+      GST_DEBUG_OBJECT (object, "poll timed out after %d ms", TIMEOUT);
     }
     /* Emit stats message */
     gst_dvbsrc_output_frontend_stats (object);

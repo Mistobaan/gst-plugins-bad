@@ -76,7 +76,7 @@ struct _GstDvbSrc
   guint tuning_timeout;
   guint dvb_buffer_size;
   gboolean need_unlock;
-};
+ };
 
 struct _GstDvbSrcClass
 {
