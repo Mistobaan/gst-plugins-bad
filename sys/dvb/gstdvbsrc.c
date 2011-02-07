@@ -108,7 +108,7 @@ enum
 #define DEFAULT_HIERARCHY HIERARCHY_1
 #define DEFAULT_INVERSION INVERSION_ON
 #define DEFAULT_STATS_REPORTING_INTERVAL 100
-#define DEFAULT_DVB_BUFFER_SIZE (2*4096)
+#define DEFAULT_DVB_BUFFER_SIZE (1024 * 1024)
 #define DEFAULT_TUNING_TIMEOUT_MSEC 10000       /* 10 sec */
 #define DEFAULT_BUFFER_SIZE 8192        /* not a property */
 
@@ -722,7 +722,7 @@ gst_dvbsrc_get_property (GObject * _object, guint prop_id,
       break;
     case ARG_DVBSRC_DVB_BUFFER_SIZE:
       g_value_set_uint (value, object->dvb_buffer_size);
-	  break;
+      break;
     case ARG_DVBSRC_TUNING_TIMEOUT:
       g_value_set_uint (value, object->tuning_timeout);
       break;
@@ -871,7 +871,8 @@ gst_dvbsrc_open_dvr (GstDvbSrc * object)
   GST_INFO_OBJECT (object, "Setting DVB kernel buffer size to %u ",
       object->dvb_buffer_size);
   if (ioctl (object->fd_dvr, DMX_SET_BUFFER_SIZE, object->dvb_buffer_size) < 0) {
-    GST_WARNING_OBJECT (object, "ioctl DMX_SET_BUFFER_SIZE failed (%d:%s)", errno, g_strerrno(errno));
+    GST_WARNING_OBJECT (object, "ioctl DMX_SET_BUFFER_SIZE failed (%d:%s)",
+        errno, g_strerror (errno));
     return FALSE;
   }
   return TRUE;
@@ -956,8 +957,9 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
         tmp = read (fd, GST_BUFFER_DATA (buf) + count, size - count);
         if (tmp < 0) {
           attempts += 1;
-          GST_WARNING_OBJECT
-              ("Unable to read from device after %d attempts: /dev/dvb/adapter%d/dvr%d",
+          GST_INFO_OBJECT
+              (object,
+              "Unable to read from device after %d attempts: /dev/dvb/adapter%d/dvr%d",
               attempts, adapter_number, frontend_number);
         } else {
           count = count + tmp;
@@ -1018,7 +1020,7 @@ gst_dvbsrc_create (GstPushSrc * element, GstBuffer ** buf)
 
   if (object->fd_dvr > -1) {
     /* --- Read TS from DVR device --- */
-    GST_DEBUG_OBJECT (object, "Reading from DVR device");
+    GST_DEBUG_OBJECT (object, "Reading %d bytes from DVR device", buffer_size);
     *buf = read_device (object->fd_dvr, object->adapter_number,
         object->frontend_number, buffer_size, object);
     if (*buf != NULL) {
