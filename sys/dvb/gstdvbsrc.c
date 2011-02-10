@@ -1150,14 +1150,16 @@ gst_dvbsrc_output_frontend_stats (GstDvbSrc * src)
   GstStructure *structure;
   int fe_fd = src->fd_frontend;
   GTimeVal now;
+  gint64 now_micros, then_micros;
+
   if (src->stats_interval == 0)
     return;
 
   g_get_current_time (&now);
 
   /* How many seconds have passed ? */
-  gint64 now_micros = ((gint64) now.tv_sec * 1000000) + now.tv_usec;
-  gint64 then_micros = ((gint64) src->stats_tstamp_last_call.tv_sec * 1000000) +
+  now_micros = ((gint64) now.tv_sec * 1000000) + now.tv_usec;
+  then_micros = ((gint64) src->stats_tstamp_last_call.tv_sec * 1000000) +
       src->stats_tstamp_last_call.tv_usec;
   if ((now_micros - then_micros) < (src->stats_interval * 1000000)) {
     return;
