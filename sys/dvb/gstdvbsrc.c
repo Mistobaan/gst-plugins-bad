@@ -953,14 +953,13 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
     if (ret_val > 0) {
       if (pfd[0].revents & POLLIN) {
         int tmp = 0;
-
         tmp = read (fd, GST_BUFFER_DATA (buf) + count, size - count);
         if (tmp < 0) {
           attempts += 1;
           GST_INFO_OBJECT
               (object,
-              "Unable to read from device after %d attempts: /dev/dvb/adapter%d/dvr%d",
-              attempts, adapter_number, frontend_number);
+              "Unable to read from device after %d attempts: /dev/dvb/adapter%d/dvr%d error:%s",
+              attempts, adapter_number, frontend_number, g_strerror (errno));
         } else {
           count = count + tmp;
         }
@@ -1544,7 +1543,7 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
     pid = object->pids[i];
 
     close (*fd);
-    if ((*fd = open (demux_dev, O_RDWR)) < 0) {
+    if ((*fd = open (demux_dev, O_RDWR | O_NONBLOCK)) < 0) {
       GST_ELEMENT_ERROR (object, RESOURCE, SETTINGS,
           (_("Error opening demuxer: %s "), demux_dev), GST_ERROR_SYSTEM);
       g_free (demux_dev);
