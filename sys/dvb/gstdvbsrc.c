@@ -77,6 +77,8 @@ enum
   ARG_DVBSRC_FREQUENCY,
   ARG_DVBSRC_POLARITY,
   ARG_DVBSRC_PIDS,
+  ARG_DVBSRC_PIDS_VIDEO,
+  ARG_DVBSRC_PIDS_AUDIO,
   ARG_DVBSRC_SYM_RATE,
   ARG_DVBSRC_BANDWIDTH,
   ARG_DVBSRC_CODE_RATE_HP,
@@ -379,6 +381,16 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           "Colon seperated list of pids (eg. 110:120)",
           DEFAULT_PIDS, G_PARAM_WRITABLE));
 
+  g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS_VIDEO,
+      g_param_spec_string ("pids_video", "pids_video",
+          "Colon seperated list of pids (eg. 110:120)",
+          DEFAULT_PIDS, G_PARAM_WRITABLE));
+
+  g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS_AUDIO,
+      g_param_spec_string ("pids_audio", "pids_audio",
+          "Colon seperated list of pids (eg. 110:120)",
+          DEFAULT_PIDS, G_PARAM_WRITABLE));
+
   g_object_class_install_property (gobject_class, ARG_DVBSRC_SYM_RATE,
       g_param_spec_uint ("symbol-rate",
           "symbol rate",
@@ -481,13 +493,14 @@ gst_dvbsrc_init (GstDvbSrc * object, GstDvbSrcClass * klass)
 
   object->fd_frontend = -1;
   object->fd_dvr = -1;
-  object->fd_filters[0] = -1;
 
   for (i = 0; i < MAX_FILTERS; i++) {
     object->pids[i] = G_MAXUINT16;
+    object->fd_filters[i] = -1;
   }
   /* Pid 0x2000 on DVB gets the whole transport stream */
   object->pids[0] = 0x2000;
+  object->num_filters = 0;
   object->dvb_buffer_size = DEFAULT_DVB_BUFFER_SIZE;
   object->adapter_number = DEFAULT_ADAPTER;
   object->frontend_number = DEFAULT_FRONTEND;
@@ -510,6 +523,29 @@ gst_dvbsrc_init (GstDvbSrc * object, GstDvbSrcClass * klass)
   object->tune_mutex = g_mutex_new ();
 }
 
+static void
+gst_dvbsrc_add_pid (GstDvbSrc * self, guint16 pid, GstDmxPesType type)
+{
+  /* check if the given pid is not already filtered */
+  for (int i = 0; i < self->num_filters; i++) {
+    if (self->pids[i] == pid) {
+      return;
+    }
+  }
+  if (self->num_filters == MAX_FILTERS) {
+    GST_ERROR_OBJECT (GST_OBJECT (self),
+        "Too many filters specified. Max num is %d ", MAX_FILTERS);
+    return;
+  }
+
+  if (pid > -1 && pid <= 0x2000) {
+    GST_INFO_OBJECT (self, "\tAdding Pid: %d", pid);
+
+    self->pids[self->num_filters] = pid;
+    self->pid_type[self->num_filters] = type;
+    self->num_filters++;
+  }
+}
 
 static void
 gst_dvbsrc_set_property (GObject * _object, guint prop_id,
@@ -553,48 +589,29 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
       break;
     }
     case ARG_DVBSRC_PIDS:
+    case ARG_DVBSRC_PIDS_AUDIO:
+    case ARG_DVBSRC_PIDS_VIDEO:
     {
-      gchar *pid_string;
+      gchar **pids;
+      char **str_split_head;
 
       GST_INFO_OBJECT (object, "Set Property: ARG_DVBSRC_PIDS");
-      pid_string = g_value_dup_string (value);
-      if (!strcmp (pid_string, "8192")) {
-        /* get the whole ts */
-        int pid_count = 1;
-        object->pids[0] = 8192;
-        while (pid_count < MAX_FILTERS) {
-          object->pids[pid_count++] = G_MAXUINT16;
+
+      str_split_head = pids =
+          g_strsplit (g_value_get_string (value), ":", MAX_FILTERS);
+
+      for (; *pids != NULL; pids++) {
+        guint16 pid = strtol (*pids, NULL, 0);
+        if (prop_id == ARG_DVBSRC_PIDS_VIDEO) {
+          gst_dvbsrc_add_pid (object, pid, GST_DMX_PES_VIDEO);
+        } else if (prop_id == ARG_DVBSRC_PIDS_AUDIO) {
+          gst_dvbsrc_add_pid (object, pid, GST_DMX_PES_AUDIO);
+        } else {
+          gst_dvbsrc_add_pid (object, pid, GST_DMX_PES_OTHER);
         }
-      } else {
-        int pid = 0;
-        int pid_count;
-        gchar **pids;
-        char **tmp;
-
-        tmp = pids = g_strsplit (pid_string, ":", MAX_FILTERS);
-        if (pid_string)
-          g_free (pid_string);
-
-        /* always add the PAT and CAT pids */
-        object->pids[0] = 0;
-        object->pids[1] = 1;
-
-        pid_count = 2;
-        while (*pids != NULL && pid_count < MAX_FILTERS) {
-          pid = strtol (*pids, NULL, 0);
-          if (pid > 1 && pid <= 8192) {
-            GST_INFO_OBJECT (object, "\tParsed Pid: %d", pid);
-            object->pids[pid_count] = pid;
-            pid_count++;
-          }
-          pids++;
-        }
-        while (pid_count < MAX_FILTERS) {
-          object->pids[pid_count++] = G_MAXUINT16;
-        }
-
-        g_strfreev (tmp);
       }
+      g_strfreev (str_split_head);
+
       /* if we are in playing or paused, then set filters now */
       GST_INFO_OBJECT (object, "checking if playing for setting pes filters");
       if (GST_ELEMENT (object)->current_state == GST_STATE_PLAYING ||
@@ -758,7 +775,7 @@ gst_dvbsrc_open_frontend (GstDvbSrc * object)
   GST_INFO_OBJECT (object, "Using frontend device: %s", frontend_dev);
 
   /* open frontend */
-  if ((object->fd_frontend = open (frontend_dev, O_RDWR | O_NONBLOCK)) < 0) {
+  if ((object->fd_frontend = open (frontend_dev, O_RDWR)) < 0) {
     switch (errno) {
       case ENOENT:
         GST_ELEMENT_ERROR (object, RESOURCE, NOT_FOUND,
@@ -891,6 +908,8 @@ gst_dvbsrc_finalize (GObject * _object)
   /* freeing the mutex segfaults somehow */
   g_mutex_free (object->tune_mutex);
 
+  gst_dvbsrc_unset_pes_filters (object);
+
   if (G_OBJECT_CLASS (parent_class)->finalize)
     G_OBJECT_CLASS (parent_class)->finalize (_object);
 }
@@ -940,7 +959,6 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
   GstBuffer *buf = gst_buffer_new_and_alloc (size);
 
   g_return_val_if_fail (GST_IS_BUFFER (buf), NULL);
-
 
   if (fd < 0) {
     return NULL;
@@ -1076,6 +1094,7 @@ static gboolean
 gst_dvbsrc_start (GstBaseSrc * bsrc)
 {
   GstDvbSrc *src = GST_DVBSRC (bsrc);
+  GST_DEBUG_OBJECT (GST_OBJECT (src), "DvbSrc is starting");
 
   gst_dvbsrc_open_frontend (src);
   if (!gst_dvbsrc_tune (src)) {
@@ -1188,7 +1207,7 @@ gst_dvbsrc_frontend_status (GstDvbSrc * object)
   fe_status_t status = 0;
   gint i;
 
-  GST_INFO_OBJECT (object, "gst_dvbsrc_frontend_status\n");
+  GST_INFO_OBJECT (object, "gst_dvbsrc_frontend_status");
 
   if (object->fd_frontend < 0) {
     GST_ERROR_OBJECT (object,
@@ -1445,12 +1464,14 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
 {
   struct pollfd pfd[1];
   int ret_val = 0;
-  struct dvb_frontend_event dvb_event;
+  struct dvb_frontend_event dvb_event = { 0 };
   const int TIMEOUT = 100;
   gboolean frontend_has_lock = FALSE;
   uint tuning_time_elapsed = 0;
   struct dvbsrc_tuning_info info;
   guint max_tuning_time;
+
+  memset (&info, 0, sizeof (struct dvbsrc_tuning_info));
 
   g_object_get (GST_OBJECT (object), "tuning-timeout",
       (GValue *) & max_tuning_time, NULL);
@@ -1470,7 +1491,7 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
   if (ioctl (object->fd_frontend, FE_SET_FRONTEND, &info.feparams) < 0) {
 #endif
     GST_ELEMENT_WARNING (object, RESOURCE, SETTINGS,
-        (_("Can not set frontend")), GST_ERROR_SYSTEM);
+        (_("Cannot set frontend")), GST_ERROR_SYSTEM);
     return FALSE;
   }
 
@@ -1493,6 +1514,7 @@ gst_dvbsrc_tune_frontend (GstDvbSrc * object)
         } else {
           GST_DEBUG_OBJECT (object, "status == 0x%02x", dvb_event.status);
           if (dvb_event.status & FE_HAS_LOCK) {
+            GST_DEBUG_OBJECT (object, "status == FE_HAS_LOCK");
             frontend_has_lock = TRUE;
           }
         }
@@ -1514,7 +1536,13 @@ static void
 gst_dvbsrc_unset_pes_filters (GstDvbSrc * object)
 {
   GST_INFO_OBJECT (object, "clearing PES filter");
-  close (object->fd_filters[0]);
+
+  for (int i = 0; i < MAX_FILTERS; i++) {
+    if (object->fd_filters[i] == -1)
+      continue;
+    close (object->fd_filters[i]);
+    object->fd_filters[i] = -1;
+  }
 }
 
 static void
@@ -1522,42 +1550,62 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
 {
   int fd;
   guint16 pid;
-  guint i;
   struct dmx_pes_filter_params pes_filter;
   gchar *demux_dev = g_strdup_printf ("/dev/dvb/adapter%d/demux%d",
       object->adapter_number, object->frontend_number);
 
   GST_INFO_OBJECT (object, "Setting PES filters");
 
-  if ((object->fd_filters[0] = open (demux_dev, O_RDWR | O_NONBLOCK)) < 0) {
-    GST_ELEMENT_ERROR (object, RESOURCE, SETTINGS,
-        (_("Error opening demuxer: %s "), demux_dev), GST_ERROR_SYSTEM);
-    g_free (demux_dev);
+  if (object->num_filters == 0) {
+    /*Listen to all the pids */
+    gst_dvbsrc_add_pid (object, 0x2000, GST_DMX_PES_OTHER);
+  } else {
+    /* always add the PAT and CAT pids */
+    gst_dvbsrc_add_pid (object, 0, GST_DMX_PES_OTHER);
+    gst_dvbsrc_add_pid (object, 1, GST_DMX_PES_OTHER);
   }
-  fd = object->fd_filters[0];
-  g_return_if_fail (fd != -1);
 
-  for (i = 0; i < MAX_FILTERS; i++) {
-    if (object->pids[i] == G_MAXUINT16)
-      break;
+  for (gint i = 0; i < object->num_filters; i++) {
+    if ((object->fd_filters[i] = open (demux_dev, O_RDWR | O_NONBLOCK)) < 0) {
+      GST_ELEMENT_ERROR (object, RESOURCE, SETTINGS,
+          (_("Error opening demuxer: %s "), demux_dev), GST_ERROR_SYSTEM);
+      g_free (demux_dev);
+    }
+    fd = object->fd_filters[i];
+    g_return_if_fail (fd != -1);
 
     pid = object->pids[i];
-
     pes_filter.pid = pid;
     pes_filter.input = DMX_IN_FRONTEND;
     pes_filter.output = DMX_OUT_TS_TAP;
-    pes_filter.pes_type = DMX_PES_OTHER;
-    pes_filter.flags = DMX_IMMEDIATE_START;
 
-    GST_INFO_OBJECT (object, "\t pid = %u, type = %d",
-        pes_filter.pid, pes_filter.pes_type);
+    switch (object->pid_type[i]) {
+      case GST_DMX_PES_VIDEO:
+        pes_filter.pes_type = DMX_PES_VIDEO;
+        break;
+      case GST_DMX_PES_AUDIO:
+        pes_filter.pes_type = DMX_PES_AUDIO;
+        break;
+      case GST_DMX_PES_OTHER:
+        pes_filter.pes_type = DMX_PES_OTHER;
+        break;
+      case GST_DMX_PES_SUBTITLE:
+        pes_filter.pes_type = DMX_PES_SUBTITLE;
+        break;
+      default:
+        GST_ERROR_OBJECT (object, "PID with invalid type found.");
+        return;
+    }
+
+    pes_filter.flags = DMX_IMMEDIATE_START;
 
     if (ioctl (fd, DMX_SET_PES_FILTER, &pes_filter) < 0) {
       GST_ELEMENT_WARNING (object,
           RESOURCE, SETTINGS,
-          (_("Error setting PES filter")), GST_ERROR_SYSTEM);
+          (_("Error setting PES filter for pid %u "), pid), GST_ERROR_SYSTEM);
+    } else {
+      GST_INFO_OBJECT (object, "\t pid = %u, type = %d",
+          pes_filter.pid, pes_filter.pes_type);
     }
   }
-
-  g_free (demux_dev);
 }
