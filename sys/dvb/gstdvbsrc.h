@@ -14,6 +14,14 @@ typedef enum
     DVB_POL_ZERO
   } GstDvbSrcPol;
 
+  typedef enum {
+	  GST_DMX_PES_AUDIO,
+	  GST_DMX_PES_VIDEO,
+	  GST_DMX_PES_TELETEXT,
+	  GST_DMX_PES_SUBTITLE,
+	  GST_DMX_PES_PCR,
+	  GST_DMX_PES_OTHER
+  } GstDmxPesType;
 
 #define IPACKS 2048
 #define TS_SIZE 188
@@ -53,7 +61,10 @@ struct _GstDvbSrc
   int fd_dvr;
   int fd_filters[MAX_FILTERS];
 
+  gint num_filters;
   guint16 pids[MAX_FILTERS];
+  GstDmxPesType pid_type[MAX_FILTERS];
+
   unsigned int freq;
   unsigned int sym_rate;
   int tone;

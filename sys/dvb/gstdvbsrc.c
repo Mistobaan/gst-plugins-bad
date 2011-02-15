@@ -292,6 +292,7 @@ static gboolean gst_dvbsrc_tune_frontend (GstDvbSrc * object);
 static void gst_dvbsrc_set_pes_filters (GstDvbSrc * object);
 static void gst_dvbsrc_unset_pes_filters (GstDvbSrc * object);
 
+static void gst_dvbsrc_start_stop_filters (GstDvbSrc * src, gboolean start);
 
 static gboolean gst_dvbsrc_frontend_status (GstDvbSrc * object);
 
@@ -378,18 +379,18 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS,
       g_param_spec_string ("pids", "pids",
-          "Colon seperated list of pids (eg. 110:120)",
-          DEFAULT_PIDS, G_PARAM_WRITABLE));
+          "Colon separated list of pids (eg. 110:120)",
+          DEFAULT_PIDS, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS_VIDEO,
       g_param_spec_string ("pids_video", "pids_video",
-          "Colon seperated list of pids (eg. 110:120)",
-          DEFAULT_PIDS, G_PARAM_WRITABLE));
+          "Colon separated list of pids (eg. 110:120)",
+          DEFAULT_PIDS, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS_AUDIO,
       g_param_spec_string ("pids_audio", "pids_audio",
-          "Colon seperated list of pids (eg. 110:120)",
-          DEFAULT_PIDS, G_PARAM_WRITABLE));
+          "Colon separated list of pids (eg. 110:120)",
+          DEFAULT_PIDS, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_SYM_RATE,
       g_param_spec_uint ("symbol-rate",
@@ -617,6 +618,7 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
       if (GST_ELEMENT (object)->current_state == GST_STATE_PLAYING ||
           GST_ELEMENT (object)->current_state == GST_STATE_PAUSED) {
         GST_INFO_OBJECT (object, "Setting pes filters now");
+        gst_dvbsrc_unset_pes_filters (object);
         gst_dvbsrc_set_pes_filters (object);
       }
     }
@@ -677,6 +679,20 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
 
+}
+
+static gchar *
+gst_dvbsrc_get_pids_of_type (GstDvbSrc * self, GstDmxPesType type)
+{
+  gchar *result = NULL;
+  for (int i = 0; i < self->num_filters; i++) {
+    if (self->pid_type[i] == type) {
+      gchar *pidstr = g_strdup_printf ("%d", self->pids[i]);
+      result = g_strjoin (":", pidstr, result, NULL);
+      g_free (pidstr);
+    }
+  }
+  return result;
 }
 
 static void
@@ -743,6 +759,33 @@ gst_dvbsrc_get_property (GObject * _object, guint prop_id,
     case ARG_DVBSRC_TUNING_TIMEOUT:
       g_value_set_uint (value, object->tuning_timeout);
       break;
+    case ARG_DVBSRC_PIDS:
+    {
+      gchar *pids = gst_dvbsrc_get_pids_of_type (object, GST_DMX_PES_OTHER);
+      if (pids)
+        g_value_take_string (value, pids);
+      else
+        g_value_set_static_string (value, "");
+      break;
+    }
+    case ARG_DVBSRC_PIDS_AUDIO:
+    {
+      gchar *pids = gst_dvbsrc_get_pids_of_type (object, GST_DMX_PES_AUDIO);
+      if (pids)
+        g_value_take_string (value, pids);
+      else
+        g_value_set_static_string (value, "");
+      break;
+    }
+    case ARG_DVBSRC_PIDS_VIDEO:
+    {
+      gchar *pids = gst_dvbsrc_get_pids_of_type (object, GST_DMX_PES_VIDEO);
+      if (pids)
+        g_value_take_string (value, pids);
+      else
+        g_value_set_static_string (value, "");
+      break;
+    }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
@@ -907,8 +950,6 @@ gst_dvbsrc_finalize (GObject * _object)
 
   /* freeing the mutex segfaults somehow */
   g_mutex_free (object->tune_mutex);
-
-  gst_dvbsrc_unset_pes_filters (object);
 
   if (G_OBJECT_CLASS (parent_class)->finalize)
     G_OBJECT_CLASS (parent_class)->finalize (_object);
@@ -1076,11 +1117,17 @@ gst_dvbsrc_change_state (GstElement * element, GstStateChange transition)
 
   switch (transition) {
     case GST_STATE_CHANGE_NULL_TO_READY:
-      /* open frontend then close it again, just so caps sent */
+      /* to send the caps, we open the frontend and then close it */
       gst_dvbsrc_open_frontend (src);
       if (src->fd_frontend) {
         close (src->fd_frontend);
       }
+      break;
+    case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+      gst_dvbsrc_start_stop_filters (src, TRUE);
+      break;
+    case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+      gst_dvbsrc_start_stop_filters (src, FALSE);
       break;
     default:
       break;
@@ -1089,6 +1136,21 @@ gst_dvbsrc_change_state (GstElement * element, GstStateChange transition)
   return ret;
 }
 
+static void
+gst_dvbsrc_start_stop_filters (GstDvbSrc * src, gboolean start)
+{
+  for (int i = 0; i < src->num_filters; i++) {
+    g_assert (src->fd_filters[i] != -1);
+    if (ioctl (src->fd_filters[i], start ? DMX_START : DMX_STOP) < 0) {
+      GST_ELEMENT_ERROR (src, RESOURCE, SETTINGS,
+          (_("Cannot %s demuxer filter for pid %u"),
+              start ? "start" : "stop", src->pids[i]), GST_ERROR_SYSTEM);
+    } else {
+      GST_DEBUG_OBJECT (src, "%s filter for pid %u ",
+          start ? "start" : "stop", src->pids[i]);
+    }
+  }
+}
 
 static gboolean
 gst_dvbsrc_start (GstBaseSrc * bsrc)
@@ -1537,7 +1599,7 @@ gst_dvbsrc_unset_pes_filters (GstDvbSrc * object)
 {
   GST_INFO_OBJECT (object, "clearing PES filter");
 
-  for (int i = 0; i < MAX_FILTERS; i++) {
+  for (int i = 0; i < object->num_filters; i++) {
     if (object->fd_filters[i] == -1)
       continue;
     close (object->fd_filters[i]);
@@ -1569,6 +1631,7 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
     if ((object->fd_filters[i] = open (demux_dev, O_RDWR | O_NONBLOCK)) < 0) {
       GST_ELEMENT_ERROR (object, RESOURCE, SETTINGS,
           (_("Error opening demuxer: %s "), demux_dev), GST_ERROR_SYSTEM);
+      gst_dvbsrc_unset_pes_filters (object);
       g_free (demux_dev);
     }
     fd = object->fd_filters[i];
@@ -1597,7 +1660,7 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
         return;
     }
 
-    pes_filter.flags = DMX_IMMEDIATE_START;
+    pes_filter.flags = 0;
 
     if (ioctl (fd, DMX_SET_PES_FILTER, &pes_filter) < 0) {
       GST_ELEMENT_WARNING (object,
