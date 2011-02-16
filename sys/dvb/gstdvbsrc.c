@@ -687,7 +687,7 @@ gst_dvbsrc_get_pids_of_type (GstDvbSrc * self, GstDmxPesType type)
   gchar *result = NULL;
   for (int i = 0; i < self->num_filters; i++) {
     if (self->pid_type[i] == type) {
-      gchar *pidstr = g_strdup_printf ("%d", self->pids[i]);
+      gchar *pidstr = g_strdup_printf ("%u", self->pids[i]);
       result = g_strjoin (":", pidstr, result, NULL);
       g_free (pidstr);
     }
@@ -1141,13 +1141,14 @@ gst_dvbsrc_start_stop_filters (GstDvbSrc * src, gboolean start)
 {
   for (int i = 0; i < src->num_filters; i++) {
     g_assert (src->fd_filters[i] != -1);
-    if (ioctl (src->fd_filters[i], start ? DMX_START : DMX_STOP) < 0) {
+    if (ioctl (src->fd_filters[i], start ? DMX_START : DMX_STOP, 0) < 0) {
       GST_ELEMENT_ERROR (src, RESOURCE, SETTINGS,
-          (_("Cannot %s demuxer filter for pid %u"),
-              start ? "start" : "stop", src->pids[i]), GST_ERROR_SYSTEM);
+          (_("Cannot %s demuxer filter for pid %u, %d"),
+              start ? "start" : "stop", src->pids[i], src->pid_type[i]),
+          GST_ERROR_SYSTEM);
     } else {
-      GST_DEBUG_OBJECT (src, "%s filter for pid %u ",
-          start ? "start" : "stop", src->pids[i]);
+      GST_INFO_OBJECT (src, "%s filter for pid %u, type %d",
+          start ? "started" : "stopped", src->pids[i], src->pid_type[i]);
     }
   }
 }
@@ -1293,7 +1294,7 @@ gst_dvbsrc_frontend_status (GstDvbSrc * object)
 
   if (!(status & FE_HAS_LOCK)) {
     GST_INFO_OBJECT (object,
-        "Not able to lock to the signal on the given frequency.\n");
+        "Not able to lock to the signal on the given frequency.");
     return FALSE;
   } else
     return TRUE;
@@ -1320,7 +1321,7 @@ diseqc_send_msg (int fd, fe_sec_voltage_t v, struct diseqc_cmd *cmd,
   }
 
   usleep (15 * 1000);
-  GST_LOG ("diseqc: 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n", cmd->cmd.msg[0],
+  GST_LOG ("diseqc: 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x", cmd->cmd.msg[0],
       cmd->cmd.msg[1], cmd->cmd.msg[2], cmd->cmd.msg[3], cmd->cmd.msg[4],
       cmd->cmd.msg[5]);
   if (ioctl (fd, FE_DISEQC_SEND_MASTER_CMD, &cmd->cmd) == -1) {
@@ -1612,11 +1613,13 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
 {
   int fd;
   guint16 pid;
+  uint audio_type_count = 0;
+  uint video_type_count = 0;
   struct dmx_pes_filter_params pes_filter;
   gchar *demux_dev = g_strdup_printf ("/dev/dvb/adapter%d/demux%d",
       object->adapter_number, object->frontend_number);
 
-  GST_INFO_OBJECT (object, "Setting PES filters");
+  GST_INFO_OBJECT (object, "Setting %d PES filters", object->num_filters);
 
   if (object->num_filters == 0) {
     /*Listen to all the pids */
@@ -1641,13 +1644,48 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
     pes_filter.pid = pid;
     pes_filter.input = DMX_IN_FRONTEND;
     pes_filter.output = DMX_OUT_TS_TAP;
+    pes_filter.flags = 0;
 
     switch (object->pid_type[i]) {
       case GST_DMX_PES_VIDEO:
-        pes_filter.pes_type = DMX_PES_VIDEO;
+        switch (video_type_count) {
+          case 0:
+            pes_filter.pes_type = DMX_PES_VIDEO0;
+            break;
+          case 1:
+            pes_filter.pes_type = DMX_PES_VIDEO1;
+            break;
+          case 2:
+            pes_filter.pes_type = DMX_PES_VIDEO2;
+            break;
+          case 3:
+            pes_filter.pes_type = DMX_PES_VIDEO3;
+            break;
+          default:
+            GST_ERROR_OBJECT (object, "Too many video pids %d ",
+                video_type_count);
+        }
+        video_type_count++;
         break;
       case GST_DMX_PES_AUDIO:
-        pes_filter.pes_type = DMX_PES_AUDIO;
+        switch (audio_type_count) {
+          case 0:
+            pes_filter.pes_type = DMX_PES_AUDIO0;
+            break;
+          case 1:
+            pes_filter.pes_type = DMX_PES_AUDIO1;
+            break;
+          case 2:
+            pes_filter.pes_type = DMX_PES_AUDIO2;
+            break;
+          case 3:
+            pes_filter.pes_type = DMX_PES_AUDIO3;
+            break;
+          default:
+            GST_ERROR_OBJECT (object, "Too many audio pids %d ",
+                audio_type_count);
+        }
+        audio_type_count++;
         break;
       case GST_DMX_PES_OTHER:
         pes_filter.pes_type = DMX_PES_OTHER;
@@ -1659,8 +1697,6 @@ gst_dvbsrc_set_pes_filters (GstDvbSrc * object)
         GST_ERROR_OBJECT (object, "PID with invalid type found.");
         return;
     }
-
-    pes_filter.flags = 0;
 
     if (ioctl (fd, DMX_SET_PES_FILTER, &pes_filter) < 0) {
       GST_ELEMENT_WARNING (object,
