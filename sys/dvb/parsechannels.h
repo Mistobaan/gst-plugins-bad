@@ -26,6 +26,6 @@
 
 GHashTable* parse_channels_conf_from_file(const gchar* filename);
 gboolean set_properties_for_channel(GObject *dvbbasebin, 
-  const gchar* channel_name);
+                                    const gchar* channel_name, const gchar* channel_conf_path);
 
 #endif

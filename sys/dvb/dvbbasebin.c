@@ -27,6 +27,7 @@
 #endif
 #include <stdlib.h>
 #include <string.h>
+#include <gst/gst-i18n-plugin.h>
 #include "dvbbasebin.h"
 #include "parsechannels.h"
 
@@ -69,8 +70,12 @@ enum
   PROP_HIERARCHY,
   PROP_INVERSION,
   PROP_PROGRAM_NUMBERS,
-  PROP_STATS_REPORTING_INTERVAL
-      /* FILL ME */
+  PROP_TUNING_TIMEOUT,
+  PROP_BUFFER_SIZE,
+  PROP_STATS_REPORTING_INTERVAL,
+  PROP_CHANNEL_NAME,
+  PROP_CHANNEL_CONF_PATH,
+  /* FILL ME */
 };
 
 typedef struct
@@ -233,12 +238,16 @@ dvb_base_bin_class_init (DvbBaseBinClass * klass)
     {PROP_BANDWIDTH, "bandwidth"},
     {PROP_CODE_RATE_HP, "code-rate-hp"},
     {PROP_CODE_RATE_LP, "code-rate-lp"},
-    {PROP_GUARD, "guard"},
+    {PROP_GUARD, "guard-interval"},
     {PROP_MODULATION, "modulation"},
-    {PROP_TRANS_MODE, "trans-mode"},
+    {PROP_TRANS_MODE, "transmission-mode"},
     {PROP_HIERARCHY, "hierarchy"},
     {PROP_INVERSION, "inversion"},
+    {PROP_TUNING_TIMEOUT, "tuning-timeout"},
+    {PROP_BUFFER_SIZE, "dvb-buffer-size"},
     {PROP_STATS_REPORTING_INTERVAL, "stats-reporting-interval"},
+    {PROP_CHANNEL_CONF_PATH, "channel-conf"},
+    {PROP_CHANNEL_NAME, "channel-name"},
     {0, NULL}
   };
 
@@ -301,7 +310,9 @@ dvb_base_bin_class_init (DvbBaseBinClass * klass)
 
       g_object_class_install_property (gobject_class, walk->prop_id, our_pspec);
     } else {
-      g_warning ("dvbsrc has no property named %s", walk->prop_name);
+      GST_DEBUG ("dvbsrc has no property named %s", walk->prop_name);
+      g_assert (FALSE ==
+          "Invalid proxy-property: no children element supports it");
     }
     ++walk;
   }
@@ -329,13 +340,11 @@ dvb_base_bin_reset (DvbBaseBin * dvbbasebin)
   }
 }
 
-static gint16 initial_pids[] = { 0, 1, 0x10, 0x11, 0x12, 0x14, -1 };
 
 static void
 dvb_base_bin_init (DvbBaseBin * dvbbasebin, DvbBaseBinClass * klass)
 {
-  DvbBaseBinStream *stream;
-  int i;
+  GST_INFO_OBJECT (dvbbasebin, "dvb_base_bin_init");
 
   dvbbasebin->dvbsrc = gst_element_factory_make ("dvbsrc", NULL);
   dvbbasebin->buffer_queue = gst_element_factory_make ("queue", NULL);
@@ -362,14 +371,7 @@ dvb_base_bin_init (DvbBaseBin * dvbbasebin, DvbBaseBinClass * klass)
   dvbbasebin->disposed = FALSE;
   dvb_base_bin_reset (dvbbasebin);
 
-  /* add PAT, CAT, NIT, SDT, EIT, TDT to pids filter for dvbsrc */
-  i = 0;
-  while (initial_pids[i] >= 0) {
-    stream = dvb_base_bin_add_stream (dvbbasebin, (guint16) initial_pids[i]);
-    ++stream->usecount;
-    i++;
-  }
-  dvb_base_bin_rebuild_filter (dvbbasebin);
+  //dvb_base_bin_rebuild_filter (dvbbasebin);
 }
 
 static void
@@ -408,7 +410,9 @@ static void
 dvb_base_bin_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
 {
-  DvbBaseBin *dvbbasebin = GST_DVB_BASE_BIN (object);
+  DvbBaseBin *dvbbasebin;
+  g_return_if_fail (GST_IS_DVB_BASE_BIN (object));
+  dvbbasebin = GST_DVB_BASE_BIN (object);
 
   switch (prop_id) {
     case PROP_ADAPTER:
@@ -425,6 +429,10 @@ dvb_base_bin_set_property (GObject * object, guint prop_id,
     case PROP_TRANS_MODE:
     case PROP_HIERARCHY:
     case PROP_INVERSION:
+    case PROP_TUNING_TIMEOUT:
+    case PROP_BUFFER_SIZE:
+    case PROP_CHANNEL_NAME:
+    case PROP_CHANNEL_CONF_PATH:
     case PROP_STATS_REPORTING_INTERVAL:
       /* FIXME: check if we can tune (state < PLAYING || program-numbers == "") */
       g_object_set_property (G_OBJECT (dvbbasebin->dvbsrc), pspec->name, value);
@@ -434,7 +442,7 @@ dvb_base_bin_set_property (GObject * object, guint prop_id,
           value);
       break;
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (dvbbasebin, prop_id, pspec);
   }
 }
 
@@ -442,7 +450,9 @@ static void
 dvb_base_bin_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec)
 {
-  DvbBaseBin *dvbbasebin = GST_DVB_BASE_BIN (object);
+  DvbBaseBin *dvbbasebin;
+  g_return_if_fail (GST_IS_DVB_BASE_BIN (object));
+  dvbbasebin = GST_DVB_BASE_BIN (object);
 
   switch (prop_id) {
     case PROP_ADAPTER:
@@ -459,6 +469,10 @@ dvb_base_bin_get_property (GObject * object, guint prop_id,
     case PROP_TRANS_MODE:
     case PROP_HIERARCHY:
     case PROP_INVERSION:
+    case PROP_TUNING_TIMEOUT:
+    case PROP_BUFFER_SIZE:
+    case PROP_CHANNEL_CONF_PATH:
+    case PROP_CHANNEL_NAME:
     case PROP_STATS_REPORTING_INTERVAL:
       g_object_get_property (G_OBJECT (dvbbasebin->dvbsrc), pspec->name, value);
       break;
@@ -759,8 +773,6 @@ dvb_base_bin_activate_program (DvbBaseBin * dvbbasebin,
     dvbbasebin->pmtlist_changed = TRUE;
     program->active = TRUE;
   }
-
-  dvb_base_bin_rebuild_filter (dvbbasebin);
 }
 
 static void
@@ -992,20 +1004,26 @@ dvb_base_bin_uri_set_uri (GstURIHandler * handler, const gchar * uri)
   DvbBaseBin *dvbbasebin = GST_DVB_BASE_BIN (handler);
 
   protocol = gst_uri_get_protocol (uri);
+  ret = FALSE;
+
+  GST_DEBUG ("set uri %s", uri);
 
   if (strcmp (protocol, "dvb") != 0) {
     ret = FALSE;
   } else {
     gchar *location = gst_uri_get_location (uri);
 
+    /* here is where we parse channels.conf */
     if (location != NULL) {
-      ret = set_properties_for_channel (G_OBJECT (dvbbasebin), location);
+      g_object_set (dvbbasebin, "channel-name", location, NULL);
       g_free (location);
-    } else
-      ret = FALSE;
+    } else {
+      GST_ELEMENT_WARNING (dvbbasebin, RESOURCE, SETTINGS,
+          (_("The specified uri %s does not contain a valid location "),
+              location), NULL);
+    }
   }
 
-  /* here is where we parse channels.conf */
   g_free (protocol);
 
   return ret;
@@ -1027,6 +1045,12 @@ gst_dvb_base_bin_plugin_init (GstPlugin * plugin)
 {
   GST_DEBUG_CATEGORY_INIT (dvb_base_bin_debug, "dvbbasebin", 0, "DVB bin");
 
+#ifdef ENABLE_NLS
+  GST_DEBUG ("binding text domain %s to locale dir %s", GETTEXT_PACKAGE,
+      LOCALEDIR);
+  bindtextdomain (GETTEXT_PACKAGE, LOCALEDIR);
+  bind_textdomain_codeset (GETTEXT_PACKAGE, "UTF-8");
+#endif /* ENABLE_NLS */
   cam_init ();
 
   return gst_element_register (plugin, "dvbbasebin",

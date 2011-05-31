@@ -21,11 +21,15 @@
  * Boston, MA 02111-1307, USA.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 #include <glib.h>
 #include <glib-object.h>
 #include <stdlib.h>
 #include <string.h>
 #include <gst/gst.h>
+#include <gst/gst-i18n-plugin.h>
 
 #include "parsechannels.h"
 
@@ -116,6 +120,10 @@ parse_channels_conf_from_file (const gchar * filename)
         if (parsed) {
           g_hash_table_insert (params, g_strdup ("sid"),
               g_strdup (fields[numfields - 1]));
+          g_hash_table_insert (params, g_strdup ("pids-audio"),
+              g_strdup (fields[numfields - 2]));
+          g_hash_table_insert (params, g_strdup ("pids-video"),
+              g_strdup (fields[numfields - 3]));
           g_hash_table_insert (res, g_strdup (fields[0]), params);
         }
         g_strfreev (fields);
@@ -145,7 +153,8 @@ destroy_channels_hash (GHashTable * channels)
 }
 
 gboolean
-set_properties_for_channel (GObject * dvbbasebin, const gchar * channel_name)
+set_properties_for_channel (GObject * dvbbasebin, const gchar * channel_name,
+    const gchar * filename)
 {
   gboolean ret = FALSE;
   GHashTable *channels;
@@ -171,6 +180,13 @@ set_properties_for_channel (GObject * dvbbasebin, const gchar * channel_name)
       const gchar *adapter;
 
       g_object_set (dvbbasebin, "program-numbers",
+          g_hash_table_lookup (params, "sid"), NULL);
+
+      g_object_set (dvbbasebin, "pids-video",
+          g_hash_table_lookup (params, "pids-video"), NULL);
+      g_object_set (dvbbasebin, "pids-audio",
+          g_hash_table_lookup (params, "pids-audio"), NULL);
+      g_object_set (dvbbasebin, "pids",
           g_hash_table_lookup (params, "sid"), NULL);
       /* check if it is terrestrial or satellite */
       adapter = g_getenv ("GST_DVB_ADAPTER");

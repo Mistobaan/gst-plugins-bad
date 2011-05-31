@@ -60,6 +60,7 @@
 
 #include <gst/gst-i18n-plugin.h>
 
+#include "parsechannels.h"
 GST_DEBUG_CATEGORY_STATIC (gstdvbsrc_debug);
 #define GST_CAT_DEFAULT (gstdvbsrc_debug)
 
@@ -91,7 +92,9 @@ enum
   ARG_DVBSRC_INVERSION,
   ARG_DVBSRC_STATS_REPORTING_INTERVAL,
   ARG_DVBSRC_DVB_BUFFER_SIZE,
-  ARG_DVBSRC_TUNING_TIMEOUT
+  ARG_DVBSRC_TUNING_TIMEOUT,
+  ARG_DVBSRC_CHANNEL_NAME,
+  ARG_DVBSRC_CHANNEL_CONF_PATH,
 };
 
 #define DEFAULT_ADAPTER 0
@@ -375,7 +378,7 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_POLARITY,
       g_param_spec_string ("polarity", "polarity", "Polarity [vhHV] (DVB-S)",
-          DEFAULT_POLARITY, G_PARAM_READWRITE | G_PARAM_CONSTRUCT));
+          DEFAULT_POLARITY, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS,
       g_param_spec_string ("pids", "pids",
@@ -383,12 +386,12 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           DEFAULT_PIDS, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS_VIDEO,
-      g_param_spec_string ("pids_video", "pids_video",
+      g_param_spec_string ("pids-video", "pids-video",
           "Colon separated list of pids (eg. 110:120)",
           DEFAULT_PIDS, G_PARAM_READWRITE));
 
   g_object_class_install_property (gobject_class, ARG_DVBSRC_PIDS_AUDIO,
-      g_param_spec_string ("pids_audio", "pids_audio",
+      g_param_spec_string ("pids-audio", "pids-audio",
           "Colon separated list of pids (eg. 110:120)",
           DEFAULT_PIDS, G_PARAM_READWRITE));
 
@@ -475,9 +478,32 @@ gst_dvbsrc_class_init (GstDvbSrcClass * klass)
           "dvb-buffer-size",
           "The kernel buffer size used by the DVB api",
           0, G_MAXUINT, DEFAULT_DVB_BUFFER_SIZE, G_PARAM_READWRITE));
+  g_object_class_install_property (gobject_class, ARG_DVBSRC_CHANNEL_NAME,
+      g_param_spec_string ("channel-name", "channel-name",
+          "Channel Name to tune into", "", G_PARAM_READWRITE));
+
+  /* channel.conf default path */
+  {
+    guint major, minor, micro, nano;
+    gchar *filename;
+    filename = g_strdup (g_getenv ("GST_DVB_CHANNELS_CONF"));
+    if (!filename) {
+      gst_version (&major, &minor, &micro, &nano);
+      filename = g_strdup_printf ("%s/.gstreamer-%d.%d/dvb-channels.conf",
+          g_get_home_dir (), major, minor);
+    }
+
+    g_object_class_install_property (gobject_class,
+        ARG_DVBSRC_CHANNEL_CONF_PATH, g_param_spec_string ("channel-conf",
+            "channel-conf", "Zap format channel file path ", filename,
+            G_PARAM_READWRITE));
+    g_free (filename);
+
+  }
 }
 
-/* initialize the new element
+/**
+ * initialize the new element
  * instantiate pads and add them to element
  * set functions
  * initialize structure
@@ -521,6 +547,15 @@ gst_dvbsrc_init (GstDvbSrc * object, GstDvbSrcClass * klass)
   object->tuning_timeout = DEFAULT_TUNING_TIMEOUT_MSEC;
   g_get_current_time (&object->stats_tstamp_last_call);
 
+  /* channel.conf default path */
+  {
+    guint major, minor, micro, nano;
+    gchar *filename;
+    gst_version (&major, &minor, &micro, &nano);
+    filename = g_strdup_printf ("%s/.gstreamer-%d.%d/dvb-channels.conf",
+        g_get_home_dir (), major, minor);
+    object->channel_conf_path = filename;
+  }
   object->tune_mutex = g_mutex_new ();
 }
 
@@ -675,6 +710,12 @@ gst_dvbsrc_set_property (GObject * _object, guint prop_id,
     case ARG_DVBSRC_DVB_BUFFER_SIZE:
       object->dvb_buffer_size = g_value_get_uint (value);
       break;
+    case ARG_DVBSRC_CHANNEL_NAME:
+      object->channel_name = g_value_dup_string (value);
+      break;
+    case ARG_DVBSRC_CHANNEL_CONF_PATH:
+      object->channel_conf_path = g_value_dup_string (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
@@ -786,6 +827,12 @@ gst_dvbsrc_get_property (GObject * _object, guint prop_id,
         g_value_set_static_string (value, "");
       break;
     }
+    case ARG_DVBSRC_CHANNEL_NAME:
+      g_value_take_string (value, object->channel_name);
+      break;
+    case ARG_DVBSRC_CHANNEL_CONF_PATH:
+      g_value_take_string (value, object->channel_conf_path);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
   }
@@ -948,6 +995,7 @@ gst_dvbsrc_finalize (GObject * _object)
   g_return_if_fail (GST_IS_DVBSRC (_object));
   object = GST_DVBSRC (_object);
 
+  free (object->channel_conf_path);
   /* freeing the mutex segfaults somehow */
   g_mutex_free (object->tune_mutex);
 
@@ -988,7 +1036,7 @@ gst_dvbsrc_plugin_init (GstPlugin * plugin)
 }
 
 static GstBuffer *
-read_device (int fd, int adapter_number, int frontend_number, int size,
+read_dvb_device (int fd, int adapter_number, int frontend_number, gulong size,
     GstDvbSrc * object)
 {
   int count = 0;
@@ -1014,9 +1062,10 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
       if (pfd[0].revents & POLLIN) {
         int bytes_read = 0;
         bytes_read = read (fd, GST_BUFFER_DATA (buf) + count, size - count);
-        if (bytes_read == EINVAL || bytes_read == EWOULDBLOCK) {
-          continue;
-        } else if (bytes_read < 0) {
+        if (bytes_read < 0) {
+          if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            continue;
+          }
           attempts += 1;
           GST_WARNING_OBJECT
               (object,
@@ -1040,11 +1089,12 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
             gst_message_new_element (GST_OBJECT (object),
                 gst_structure_empty_new ("dvb-read-failure")));
       }
-    } else if (errno == -EINTR) {       /* poll interrupted */
-      if (attempts % 50 == 0) {
-        gst_buffer_unref (buf);
-        return NULL;
-      };
+    } else {
+      if (attempts % 10 == 0) {
+        GST_WARNING
+            ("Error reading timeout after %u attempts from device: /dev/dvb/adapter%d/dvr%d (%d) - poll error: %s",
+            attempts, adapter_number, frontend_number, g_strerror (errno));
+      }
     }
 
   }
@@ -1063,15 +1113,14 @@ read_device (int fd, int adapter_number, int frontend_number, int size,
 static GstFlowReturn
 gst_dvbsrc_create (GstPushSrc * element, GstBuffer ** buf)
 {
-  gint buffer_size;
+  gulong buffer_size;
   GstFlowReturn retval = GST_FLOW_ERROR;
   GstDvbSrc *object;
 
   object = GST_DVBSRC (element);
   GST_LOG ("fd_dvr: %d", object->fd_dvr);
 
-  /* g_object_get(G_OBJECT(object), "blocksize", &buffer_size, NULL); */
-  buffer_size = DEFAULT_BUFFER_SIZE;
+  buffer_size = gst_base_src_get_blocksize (GST_BASE_SRC (object));
 
   /* device can not be tuned during read */
   g_mutex_lock (object->tune_mutex);
@@ -1079,8 +1128,8 @@ gst_dvbsrc_create (GstPushSrc * element, GstBuffer ** buf)
 
   if (object->fd_dvr > -1) {
     /* --- Read TS from DVR device --- */
-    GST_DEBUG_OBJECT (object, "Reading %d bytes from DVR device", buffer_size);
-    *buf = read_device (object->fd_dvr, object->adapter_number,
+    GST_DEBUG_OBJECT (object, "Reading %ul bytes from DVR device", buffer_size);
+    *buf = read_dvb_device (object->fd_dvr, object->adapter_number,
         object->frontend_number, buffer_size, object);
     if (*buf != NULL) {
       GstCaps *caps;
@@ -1159,9 +1208,19 @@ gst_dvbsrc_start (GstBaseSrc * bsrc)
   GstDvbSrc *src = GST_DVBSRC (bsrc);
   GST_DEBUG_OBJECT (GST_OBJECT (src), "DvbSrc is starting");
 
+  if (src->channel_name) {
+    gboolean ret =
+        set_properties_for_channel (G_OBJECT (src), src->channel_name,
+        src->channel_conf_path);
+    if (ret) {
+      GST_INFO_OBJECT (GST_OBJECT (src),
+          "Configuration successfully read from %s", src->channel_conf_path);
+    }
+  }
   gst_dvbsrc_open_frontend (src);
   if (!gst_dvbsrc_tune (src)) {
-    GST_ERROR_OBJECT (src, "Not able to lock on to the dvb channel");
+    GST_ERROR_OBJECT (src,
+        "Not able to lock on to the dvb channel (frequency %d Hz)", src->freq);
     close (src->fd_frontend);
     return FALSE;
   }
